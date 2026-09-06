@@ -1,4 +1,5 @@
-import { createCsv, createHtml } from "../shared/export.js";
+import { createExcelXml, createHtml } from "../shared/export.js";
+import { groupItemsBySource, normalizeSourceUrl, removeCollectionItems } from "../shared/collections.js";
 
 let library = { vocabulary: [], sentences: [] };
 let activeTab = "vocabulary";
@@ -6,14 +7,20 @@ let searchQuery = "";
 let activeLanguage = "all";
 let visibleItems = [];
 let translationsVisible = true;
+let sortOrder = "newest";
+let collections = [];
+let activeCollection = "default";
+let editorCollectionId = null;
+let editorCheckedIds = new Set();
+let editorSourceUrls = new Set();
+let managerSelectedIds = new Set();
+let returnToManager = false;
 const selectedIds = new Set();
 const languageNames = { en: "英语", fr: "法语", de: "德语", ko: "韩语", es: "西班牙语", ja: "日语", it: "意大利语", pt: "葡萄牙语", ru: "俄语" };
 
 document.querySelectorAll("nav button").forEach((button) => {
   button.addEventListener("click", () => {
-    activeTab = button.dataset.tab;
-    selectedIds.clear();
-    document.querySelectorAll("nav button").forEach((item) => item.classList.toggle("active", item === button));
+    setActiveTab(button.dataset.tab);
     render();
   });
 });
@@ -30,6 +37,39 @@ document.querySelector("#language-filter").addEventListener("change", (event) =>
   render();
 });
 
+document.querySelector("#sort-order").addEventListener("change", (event) => {
+  sortOrder = event.target.value;
+  render();
+});
+
+document.querySelector("#collection-filter").addEventListener("change", async (event) => {
+  if (event.target.value === "manage") {
+    event.target.value = activeCollection;
+    openCollectionManager();
+    return;
+  }
+  activeCollection = event.target.value;
+  selectedIds.clear();
+  ensureCollectionTab();
+  updateCollectionFilter();
+  render();
+});
+
+document.querySelector("#close-collection-dialog").addEventListener("click", closeCollectionEditor);
+document.querySelector("#close-collection-manager").addEventListener("click", closeCollectionEditor);
+document.querySelector("#new-collection").addEventListener("click", () => openCollectionEditor(null, true));
+document.querySelector("#delete-collections").addEventListener("click", deleteSelectedCollections);
+document.querySelector("#cancel-collection").addEventListener("click", () => returnToManager ? openCollectionManager() : closeCollectionEditor());
+document.querySelector("#collection-select-all").addEventListener("click", () => {
+  itemsForSources(editorSourceUrls).forEach((item) => editorCheckedIds.add(item.id));
+  renderCollectionItems();
+});
+document.querySelector("#collection-select-none").addEventListener("click", () => {
+  editorCheckedIds.clear();
+  renderCollectionItems();
+});
+document.querySelector("#save-collection").addEventListener("click", saveCollection);
+
 document.querySelector("#select-all").addEventListener("click", () => {
   const allSelected = visibleItems.length > 0 && visibleItems.every((item) => selectedIds.has(item.id));
   visibleItems.forEach((item) => allSelected ? selectedIds.delete(item.id) : selectedIds.add(item.id));
@@ -42,35 +82,49 @@ document.querySelector("#toggle-translations").addEventListener("click", () => {
   document.querySelector("#toggle-translations").textContent = translationsVisible ? "隐藏翻译" : "显示翻译";
 });
 
-document.querySelector("#export-csv").addEventListener("click", () => {
+document.querySelector("#export-excel").addEventListener("click", () => {
   const items = exportItems();
-  downloadText(createCsv(items), exportFilename("csv"), "text/csv;charset=utf-8");
-  setNotice(`已导出 ${items.length} 条 CSV 记录。`);
+  const vocabulary = items.filter((item) => item.kind !== "sentence");
+  const sentences = items.filter((item) => item.kind === "sentence");
+  downloadText(createExcelXml(vocabulary, sentences), exportFilename("xls"), "application/vnd.ms-excel;charset=utf-8");
+  setNotice(`已导出 Excel：${vocabulary.length} 个词语 · ${sentences.length} 个句子。`);
 });
 
 document.querySelector("#export-html").addEventListener("click", () => {
-  const title = activeTab === "sentences" ? "Poke Poke 句子库" : "Poke Poke 生词库";
   const items = exportItems();
-  downloadText(createHtml(items, title), exportFilename("html"), "text/html;charset=utf-8");
+  const kinds = new Set(items.map((item) => item.kind === "sentence" ? "sentences" : "vocabulary"));
+  downloadText(createHtml(items, exportTitle(kinds), sortOrder, kinds.size > 1), exportFilename("html", kinds), "text/html;charset=utf-8");
   setNotice(`已导出 ${items.length} 条 HTML 记录。`);
 });
 
 document.querySelector("#delete-selected").addEventListener("click", async () => {
-  if (!selectedIds.size) return;
-  const count = selectedIds.size;
+  const selectedCurrent = visibleItems.filter((item) => selectedIds.has(item.id));
+  if (!selectedCurrent.length) return;
+  const count = selectedCurrent.length;
+  if (activeCollection !== "default") {
+    const collection = collections.find((item) => item.id === activeCollection);
+    if (!collection || !window.confirm(`确定将选中的 ${count} 条记录移出子库“${collection.name}”吗？原学习记录不会被删除。`)) return;
+    collection.itemIds = removeCollectionItems(collection, selectedCurrent.map((item) => item.id));
+    collection.updatedAt = new Date().toISOString();
+    await chrome.storage.local.set({ collections });
+    selectedCurrent.forEach((item) => selectedIds.delete(item.id));
+    setNotice(`已从子库移出 ${count} 条记录。`);
+    render();
+    return;
+  }
   if (!window.confirm(`确定从学习库删除选中的 ${count} 条记录吗？请先导出备份；此操作无法在插件内撤销。`)) return;
   const response = await chrome.runtime.sendMessage({
     type: "delete-library-items",
     payload: {
       kind: activeTab === "sentences" ? "sentence" : "vocabulary",
-      ids: [...selectedIds]
+      ids: selectedCurrent.map((item) => item.id)
     }
   });
   if (!response?.ok) {
     setNotice(response?.error ?? "删除失败。", true);
     return;
   }
-  selectedIds.clear();
+  selectedCurrent.forEach((item) => selectedIds.delete(item.id));
   setNotice(`已删除 ${response.summary.deleted} 条记录。`);
   await load();
 });
@@ -85,6 +139,8 @@ async function load() {
     return;
   }
   library = response.library;
+  const stored = await chrome.storage.local.get("collections");
+  collections = Array.isArray(stored.collections) ? stored.collections : [];
   const existingIds = new Set([...library.vocabulary, ...library.sentences].map((item) => item.id));
   [...selectedIds].forEach((id) => {
     if (!existingIds.has(id)) selectedIds.delete(id);
@@ -92,6 +148,8 @@ async function load() {
   document.querySelector("#summary").textContent =
     `${library.vocabulary.length} 个词语 · ${library.sentences.length} 个句子`;
   updateLanguageFilter();
+  ensureCollectionTab();
+  updateCollectionFilter();
   render();
 }
 
@@ -119,19 +177,7 @@ function updateLanguageFilter() {
 
 function render() {
   const list = document.querySelector("#list");
-  visibleItems = (library[activeTab] ?? []).filter((item) => {
-    if (activeLanguage !== "all" && itemLanguage(item) !== activeLanguage) return false;
-    if (!searchQuery) return true;
-    const searchable = [
-      item.text,
-      item.chineseDefinition,
-      item.translationZh,
-      item.sourceLanguage,
-      item.source?.pageTitle,
-      ...(item.collocations ?? []).flatMap((entry) => [entry.phrase, entry.meaningZh])
-    ].filter(Boolean).join(" ").toLocaleLowerCase();
-    return searchable.includes(searchQuery);
-  });
+  visibleItems = filteredItems(activeTab);
 
   list.replaceChildren();
   updateSelectionControls();
@@ -151,6 +197,32 @@ function render() {
   let renderedLanguage = "";
   const groupedItems = orderedVisibleItems();
   groupedItems.forEach((item) => {
+    renderedLanguage = renderItem(item, groupedItems, renderedLanguage);
+  });
+}
+
+function filteredItems(tab) {
+  const collectionIds = activeCollection === "default"
+    ? null
+    : new Set(collections.find((collection) => collection.id === activeCollection)?.itemIds ?? []);
+  return (library[tab] ?? []).filter((item) => {
+    if (collectionIds && !collectionIds.has(item.id)) return false;
+    if (activeLanguage !== "all" && itemLanguage(item) !== activeLanguage) return false;
+    if (!searchQuery) return true;
+    const searchable = [
+      item.text,
+      item.chineseDefinition,
+      item.translationZh,
+      item.sourceLanguage,
+      item.source?.pageTitle,
+      ...(item.collocations ?? []).flatMap((entry) => [entry.phrase, entry.meaningZh])
+    ].filter(Boolean).join(" ").toLocaleLowerCase();
+    return searchable.includes(searchQuery);
+  });
+}
+
+function renderItem(item, groupedItems, renderedLanguage) {
+    const list = document.querySelector("#list");
     const itemLanguageCode = itemLanguage(item);
     if (itemLanguageCode !== renderedLanguage) {
       renderedLanguage = itemLanguageCode;
@@ -234,28 +306,43 @@ function render() {
         source.href = item.source.pageUrl;
         source.target = "_blank";
         source.rel = "noopener noreferrer";
-        source.textContent = item.source.pageTitle;
+        source.textContent = sourceLabel(item.source.pageTitle);
         meta.appendChild(source);
       } else {
-        meta.append(document.createTextNode(item.source.pageTitle));
+        meta.append(document.createTextNode(sourceLabel(item.source.pageTitle)));
       }
     }
     if (date) meta.append(document.createTextNode(` · ${date}`));
     article.appendChild(meta);
     list.appendChild(article);
-  });
+    return itemLanguageCode;
 }
 
 function orderedVisibleItems() {
-  return [...visibleItems].sort((a, b) => {
+  return orderedItems(visibleItems);
+}
+
+function orderedItems(items) {
+  return [...items].sort((a, b) => {
     const languageOrder = languageLabel(itemLanguage(a)).localeCompare(languageLabel(itemLanguage(b)), "zh-CN");
-    return languageOrder || String(b.createdAt).localeCompare(String(a.createdAt));
+    if (languageOrder) return languageOrder;
+    if (sortOrder === "alphabetical") return String(a.text ?? "").localeCompare(String(b.text ?? ""), itemLanguage(a), { sensitivity: "base" });
+    const dateOrder = String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? ""));
+    return sortOrder === "oldest" ? dateOrder : -dateOrder;
   });
 }
 
 function exportItems() {
-  const ordered = orderedVisibleItems();
-  return selectedIds.size ? ordered.filter((item) => selectedIds.has(item.id)) : ordered;
+  const all = orderedItems(["vocabulary", "sentences"].flatMap((tab) => filteredItems(tab)));
+  const selected = all.filter((item) => selectedIds.has(item.id));
+  return selected.length ? selected : orderedVisibleItems();
+}
+
+function exportTitle(kinds) {
+  const collection = collections.find((item) => item.id === activeCollection)?.name;
+  if (collection) return `Poke Poke · ${collection}`;
+  const scopeName = kinds.size > 1 ? "学习库" : kinds.has("sentences") ? "句子库" : "生词库";
+  return `Poke Poke ${scopeName}`;
 }
 
 function partOfSpeechName(partOfSpeech) {
@@ -265,16 +352,240 @@ function partOfSpeechName(partOfSpeech) {
 
 function updateSelectionControls() {
   const selectedVisible = visibleItems.filter((item) => selectedIds.has(item.id)).length;
+  const selectedCurrent = selectedVisible;
   const selectAll = document.querySelector("#select-all");
   selectAll.disabled = visibleItems.length === 0;
   selectAll.textContent = selectedVisible === visibleItems.length && visibleItems.length
     ? "取消全选"
     : "全选当前结果";
   const deleteButton = document.querySelector("#delete-selected");
-  deleteButton.disabled = selectedIds.size === 0;
-  deleteButton.textContent = selectedIds.size ? `删除选中项（${selectedIds.size}）` : "删除选中项";
-  document.querySelector("#export-csv").textContent = selectedIds.size ? `导出选中 CSV（${selectedIds.size}）` : "导出当前 CSV";
-  document.querySelector("#export-html").textContent = selectedIds.size ? `导出选中 HTML（${selectedIds.size}）` : "导出当前 HTML";
+  deleteButton.disabled = selectedCurrent === 0;
+  const deleteLabel = activeCollection === "default" ? "删除选中项" : "移出子库";
+  deleteButton.textContent = selectedCurrent ? `${deleteLabel}（${selectedCurrent}）` : deleteLabel;
+  const words = collectionItems("vocabulary");
+  const sentences = collectionItems("sentences");
+  const selectedWords = words.filter((item) => selectedIds.has(item.id)).length;
+  const selectedSentences = sentences.filter((item) => selectedIds.has(item.id)).length;
+  document.querySelector('[data-tab="vocabulary"]').textContent = `生词库 · ${words.length}${selectedWords ? ` (${selectedWords})` : ""}`;
+  document.querySelector('[data-tab="sentences"]').textContent = `句子库 · ${sentences.length}${selectedSentences ? ` (${selectedSentences})` : ""}`;
+  document.querySelector("#export-excel").textContent = "导出 Excel";
+  document.querySelector("#export-html").textContent = "导出 HTML";
+}
+
+function updateCollectionFilter() {
+  const select = document.querySelector("#collection-filter");
+  if (activeCollection !== "default" && !collections.some((collection) => collection.id === activeCollection)) activeCollection = "default";
+  select.replaceChildren(new Option("默认", "default"));
+  collections.forEach((collection) => select.appendChild(new Option(collection.name, collection.id)));
+  select.appendChild(new Option("编辑子库…", "manage"));
+  select.value = activeCollection;
+}
+
+function collectionItems(tab) {
+  if (activeCollection === "default") return library[tab] ?? [];
+  const itemIds = new Set(collections.find((collection) => collection.id === activeCollection)?.itemIds ?? []);
+  return (library[tab] ?? []).filter((item) => itemIds.has(item.id));
+}
+
+function setActiveTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll("nav button").forEach((button) => button.classList.toggle("active", button.dataset.tab === tab));
+}
+
+function ensureCollectionTab() {
+  if (activeCollection === "default") return;
+  const itemIds = new Set(collections.find((collection) => collection.id === activeCollection)?.itemIds ?? []);
+  if ((library[activeTab] ?? []).some((item) => itemIds.has(item.id))) return;
+  const alternative = activeTab === "vocabulary" ? "sentences" : "vocabulary";
+  if ((library[alternative] ?? []).some((item) => itemIds.has(item.id))) setActiveTab(alternative);
+}
+
+function sourceGroups() {
+  const groups = new Map();
+  groupItemsBySource([...library.vocabulary, ...library.sentences]).forEach((items, url) => {
+    groups.set(url, { title: sourceLabel(items[0]?.source?.pageTitle) || url, items });
+  });
+  return groups;
+}
+
+function itemsForSource(url) {
+  return sourceGroups().get(url)?.items ?? [];
+}
+
+function itemsForSources(urls) {
+  return [...urls].flatMap((url) => itemsForSource(url));
+}
+
+function openCollectionManager() {
+  returnToManager = false;
+  editorCollectionId = null;
+  editorCheckedIds.clear();
+  editorSourceUrls.clear();
+  managerSelectedIds.clear();
+  document.querySelector("#collection-dialog-title").textContent = "编辑子库";
+  document.querySelector("#collection-manager").hidden = false;
+  document.querySelector("#collection-editor").hidden = true;
+  renderCollectionManager();
+  const dialog = document.querySelector("#collection-dialog");
+  if (!dialog.open) dialog.showModal();
+}
+
+function renderCollectionManager() {
+  const container = document.querySelector("#collection-list");
+  container.replaceChildren();
+  collections.forEach((collection) => {
+    const row = document.createElement("div");
+    row.className = "collection-row";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.setAttribute("aria-label", `选择删除 ${collection.name}`);
+    checkbox.checked = managerSelectedIds.has(collection.id);
+    checkbox.addEventListener("change", () => {
+      checkbox.checked ? managerSelectedIds.add(collection.id) : managerSelectedIds.delete(collection.id);
+      document.querySelector("#delete-collections").disabled = managerSelectedIds.size === 0;
+    });
+    const name = document.createElement("span");
+    name.textContent = collection.name;
+    const open = document.createElement("button");
+    open.className = "open-collection";
+    open.textContent = "›";
+    open.setAttribute("aria-label", `编辑 ${collection.name}`);
+    open.addEventListener("click", () => openCollectionEditor(collection.id, true));
+    row.append(checkbox, name, open);
+    container.appendChild(row);
+  });
+  if (!collections.length) {
+    const empty = document.createElement("p");
+    empty.className = "manager-empty";
+    empty.textContent = "还没有自定义子库。";
+    container.appendChild(empty);
+  }
+  document.querySelector("#delete-collections").disabled = managerSelectedIds.size === 0;
+}
+
+function openCollectionEditor(collectionId = null, fromManager = false) {
+  const groups = sourceGroups();
+  if (!groups.size) {
+    setNotice("当前学习记录中没有可用的来源 URL。", true);
+    return;
+  }
+  const collection = collections.find((item) => item.id === collectionId);
+  returnToManager = fromManager;
+  const selected = [...library.vocabulary, ...library.sentences].filter((item) => selectedIds.has(item.id));
+  const selectedUrls = [...new Set(selected.map((item) => normalizeSourceUrl(item.source?.pageUrl)).filter(Boolean))];
+  const savedUrls = collection?.sourceUrls?.length ? collection.sourceUrls : collection?.sourceUrl ? [collection.sourceUrl] : [];
+  const initialUrls = savedUrls.length ? savedUrls : selectedUrls.length ? selectedUrls : [groups.keys().next().value];
+  editorCollectionId = collection?.id ?? null;
+  editorSourceUrls = new Set(initialUrls.filter((url) => groups.has(url)));
+  editorCheckedIds = new Set(collection?.itemIds ?? (selectedUrls.length ? selected.map((item) => item.id) : itemsForSources(editorSourceUrls).map((item) => item.id)));
+  document.querySelector("#collection-dialog-title").textContent = collection ? "编辑子库" : "新建子库";
+  document.querySelector("#collection-manager").hidden = true;
+  document.querySelector("#collection-editor").hidden = false;
+  document.querySelector("#collection-name").value = collection?.name || sourceLabel(itemsForSources(editorSourceUrls)[0]?.source?.pageTitle) || "新子库";
+  renderCollectionSources(groups);
+  renderCollectionItems();
+  const dialog = document.querySelector("#collection-dialog");
+  if (!dialog.open) dialog.showModal();
+}
+
+function renderCollectionSources(groups = sourceGroups()) {
+  const container = document.querySelector("#collection-sources");
+  container.replaceChildren();
+  groups.forEach((group, url) => {
+    const label = document.createElement("label");
+    label.className = "collection-source";
+    label.title = url;
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = editorSourceUrls.has(url);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) {
+        editorSourceUrls.add(url);
+        group.items.forEach((item) => editorCheckedIds.add(item.id));
+      } else {
+        editorSourceUrls.delete(url);
+        group.items.forEach((item) => editorCheckedIds.delete(item.id));
+      }
+      renderCollectionItems();
+    });
+    label.append(checkbox, document.createTextNode(`${group.title}（${group.items.length}）`));
+    container.appendChild(label);
+  });
+}
+
+function renderCollectionItems() {
+  const container = document.querySelector("#collection-items");
+  container.replaceChildren();
+  itemsForSources(editorSourceUrls).forEach((item) => {
+    const label = document.createElement("label");
+    label.className = "collection-item";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = editorCheckedIds.has(item.id);
+    checkbox.addEventListener("change", () => checkbox.checked ? editorCheckedIds.add(item.id) : editorCheckedIds.delete(item.id));
+    const text = document.createElement("span");
+    const kind = document.createElement("span");
+    kind.className = "collection-kind";
+    kind.textContent = item.kind === "sentence" ? "句子 · " : "词语 · ";
+    text.append(kind, document.createTextNode(item.text));
+    label.append(checkbox, text);
+    container.appendChild(label);
+  });
+}
+
+async function saveCollection() {
+  const name = document.querySelector("#collection-name").value.trim();
+  const sourceUrls = [...editorSourceUrls];
+  const validIds = new Set(itemsForSources(sourceUrls).map((item) => item.id));
+  const itemIds = [...editorCheckedIds].filter((id) => validIds.has(id));
+  if (!name || !sourceUrls.length || !itemIds.length) {
+    setNotice(!name ? "请输入子库名称。" : !sourceUrls.length ? "请至少选择一个来源 URL。" : "请至少纳入一条记录。", true);
+    return;
+  }
+  const existing = collections.find((item) => item.id === editorCollectionId);
+  if (existing) {
+    Object.assign(existing, { name, sourceUrl: sourceUrls[0], sourceUrls, itemIds, updatedAt: new Date().toISOString() });
+  } else {
+    const collection = { id: `collection-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name, sourceUrl: sourceUrls[0], sourceUrls, itemIds, createdAt: new Date().toISOString() };
+    collections.push(collection);
+    activeCollection = collection.id;
+  }
+  await chrome.storage.local.set({ collections });
+  selectedIds.clear();
+  ensureCollectionTab();
+  updateCollectionFilter();
+  render();
+  setNotice(`已保存子库“${name}”，包含 ${itemIds.length} 条记录。`);
+  if (returnToManager) openCollectionManager();
+  else closeCollectionEditor();
+}
+
+async function deleteSelectedCollections() {
+  if (!managerSelectedIds.size || !window.confirm(`确定删除选中的 ${managerSelectedIds.size} 个子库吗？学习记录不会被删除。`)) return;
+  const deletingActive = managerSelectedIds.has(activeCollection);
+  collections = collections.filter((item) => !managerSelectedIds.has(item.id));
+  if (deletingActive) {
+    activeCollection = "default";
+    setActiveTab("vocabulary");
+  }
+  await chrome.storage.local.set({ collections });
+  managerSelectedIds.clear();
+  updateCollectionFilter();
+  render();
+  renderCollectionManager();
+}
+
+function closeCollectionEditor() {
+  document.querySelector("#collection-dialog").close();
+  editorCollectionId = null;
+  editorCheckedIds.clear();
+  editorSourceUrls.clear();
+  managerSelectedIds.clear();
+  returnToManager = false;
+}
+
+function sourceLabel(value) {
+  return String(value ?? "").split(/\s[-–—|]\s|-/)[0].trim();
 }
 
 function createSpeakerIcon() {
@@ -302,9 +613,10 @@ function downloadText(content, filename, mimeType) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function exportFilename(extension) {
+function exportFilename(extension, kinds = new Set(exportItems().map((item) => item.kind === "sentence" ? "sentences" : "vocabulary"))) {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return `poke-poke-${activeTab}-${stamp}.${extension}`;
+  const scope = kinds.size > 1 ? "library" : kinds.has("sentences") ? "sentences" : "vocabulary";
+  return `poke-poke-${scope}-${stamp}.${extension}`;
 }
 
 function setNotice(message, isError = false) {

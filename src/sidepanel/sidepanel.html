@@ -15,6 +15,10 @@
     <nav aria-label="学习库分类">
       <button class="active" data-tab="vocabulary">生词库</button>
       <button data-tab="sentences">句子库</button>
+      <select id="collection-filter" aria-label="选择学习子库">
+        <option value="default">默认</option>
+        <option value="manage">编辑子库…</option>
+      </select>
     </nav>
     <div class="search">
       <input id="search" type="search" placeholder="搜索学习库" autocomplete="off">
@@ -24,13 +28,45 @@
     </div>
     <div class="toolbar">
       <button id="select-all">全选当前结果</button>
-      <button id="export-csv">导出当前 CSV</button>
+      <button id="export-excel">导出 Excel</button>
       <button id="export-html">导出当前 HTML</button>
       <button id="delete-selected" class="danger" disabled>删除选中项</button>
-      <button id="toggle-translations" class="push-right">隐藏翻译</button>
+      <select id="sort-order" class="push-right" aria-label="学习记录排序">
+        <option value="newest">添加时间倒序</option>
+        <option value="oldest">添加时间正序</option>
+        <option value="alphabetical">字母顺序 A–Z</option>
+      </select>
+      <button id="toggle-translations">隐藏翻译</button>
     </div>
     <p id="notice" class="notice" role="status"></p>
     <main id="list"></main>
+    <dialog id="collection-dialog">
+      <div class="dialog-head">
+        <h2 id="collection-dialog-title">新建子库</h2>
+        <button id="close-collection-dialog" aria-label="关闭">×</button>
+      </div>
+      <section id="collection-manager" hidden>
+        <div class="manager-actions"><button id="new-collection" class="primary">＋ 新建子库</button></div>
+        <div id="collection-list" class="collection-list"></div>
+        <div class="dialog-footer">
+          <button id="delete-collections" class="danger" disabled>删除所选子库</button>
+          <button id="close-collection-manager">完成</button>
+        </div>
+      </section>
+      <section id="collection-editor">
+        <label class="field">子库名称<input id="collection-name" maxlength="60" autocomplete="off"></label>
+        <div class="field">来源文章（可多选）<div id="collection-sources" class="collection-sources"></div></div>
+        <div class="collection-actions">
+          <button id="collection-select-all">纳入此 URL 全部</button>
+          <button id="collection-select-none">全部取消</button>
+        </div>
+        <div id="collection-items" class="collection-items"></div>
+        <div class="dialog-footer">
+          <button id="cancel-collection">取消</button>
+          <button id="save-collection" class="primary">保存</button>
+        </div>
+      </section>
+    </dialog>
     <script type="module" src="sidepanel.js"></script>
   </body>
 </html>
