@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCsv, createHtml, createLibraryJson } from "../src/shared/export.js";
+import { createExcelXml, createHtml, createLibraryJson } from "../src/shared/export.js";
 
 test("exports a versioned library json document", () => {
   const parsed = JSON.parse(createLibraryJson({ vocabulary: [{ id: "1" }], sentences: [] }));
@@ -9,64 +9,15 @@ test("exports a versioned library json document", () => {
   assert.equal(parsed.vocabulary[0].id, "1");
 });
 
-test("escapes commas and quotes in csv", () => {
-  const csv = createCsv([{
-    kind: "vocabulary",
-    text: 'take "care", now',
-    chineseDefinition: "当心"
-  }]);
-  assert.match(csv, /"take ""care"", now"/);
-});
-
-test("exports language ipa and numbered meanings to csv", () => {
-  const csv = createCsv([{
-    kind: "vocabulary",
-    sourceLanguage: "en",
-    text: "attempt",
-    ipa: "/əˈtɛmpt/",
-    chineseDefinition: "尝试",
-    meanings: [{ partOfSpeech: "noun", definitionZh: "尝试" }, { partOfSpeech: "verb", definitionZh: "试图" }]
-  }]);
-  assert.match(csv, /^id,sub_id,type,language,text,ipa/);
-  assert.match(csv, /\/əˈtɛmpt\//);
-  assert.match(csv, /1\. noun: 尝试/);
-  assert.match(csv, /2\. verb: 试图/);
-});
-
-test("exports only the sentence and collocations under one parent id", () => {
-  const csv = createCsv([{
-    kind: "sentence",
-    sourceLanguage: "en",
-    text: "He passed by a billboard.",
-    translationZh: "他经过了一块广告牌。",
-    segments: ["He passed by", "a billboard."],
-    collocations: [{ phrase: "pass by", meaningZh: "经过；路过" }],
-    source: { pageUrl: "https://example.com/reading/article" }
-  }]);
-  assert.match(csv, /1,0,sentence,en/);
-  assert.match(csv, /1,1,fixed_collocation,en,pass by,经过；路过,https:\/\/example\.com/);
-  assert.doesNotMatch(csv, /sentence_segment/);
-  assert.equal(csv.split("\n").length, 3);
-  assert.doesNotMatch(csv, /source_title|source_url|created_at/);
-  assert.doesNotMatch(csv.split("\n")[0], /ipa|numbered_meanings/);
-  assert.doesNotMatch(csv, /\/reading\/article/);
-});
-
-test("drops columns that are empty for every exported row", () => {
-  const csv = createCsv([{ kind: "vocabulary", text: "organic", chineseDefinition: "有机的" }]);
-  const header = csv.split("\n")[0];
-  assert.equal(header, "id,sub_id,type,text,translation");
-  assert.doesNotMatch(header, /language|ipa|numbered_meanings|source/);
-});
-
 test("creates a standalone html view with escaped cards and collocations", () => {
   const html = createHtml([{
     kind: "sentence",
     text: "A < B",
     translationZh: "A 小于 B",
     collocations: [{ phrase: "pass by", meaningZh: "经过" }],
-    source: { pageTitle: "Reading < Page", pageUrl: "https://example.com/story" }
-  }], "句子库");
+    createdAt: "2026-09-01T00:00:00.000Z",
+    source: { pageTitle: "Reading-a-b-root", pageUrl: "https://example.com/story" }
+  }], "句子库", "alphabetical", true);
   assert.match(html, /<!doctype html>/);
   assert.match(html, /A &lt; B/);
   assert.match(html, /固定搭配/);
@@ -74,5 +25,27 @@ test("creates a standalone html view with escaped cards and collocations", () =>
   assert.match(html, /id="toggle">隐藏翻译/);
   assert.match(html, /translations-hidden/);
   assert.match(html, /href="https:\/\/example\.com\/story"/);
-  assert.match(html, /Reading &lt; Page/);
+  assert.match(html, />Reading<\/a>/);
+  assert.doesNotMatch(html, /Reading-a-b-root/);
+  assert.match(html, /id="sort"/);
+  assert.match(html, /value="alphabetical" selected/);
+  assert.match(html, /data-created-at="2026-09-01T00:00:00.000Z"/);
+  assert.match(html, /data-kind="sentences"/);
+  assert.match(html, /data-view="vocabulary">生词库/);
+  assert.match(html, /data-view="sentences">句子库/);
+  assert.doesNotMatch(html, /data-view="all">全部/);
+  assert.match(html, /class="header-controls"/);
+  assert.doesNotMatch(html, /条当前筛选记录/);
+});
+
+test("creates an Excel workbook with separate vocabulary and sentence sheets", () => {
+  const xml = createExcelXml(
+    [{ kind: "vocabulary", text: "organic", chineseDefinition: "有机的" }],
+    [{ kind: "sentence", text: "It works.", translationZh: "它有效。", source: { pageUrl: "https://example.com/story/chapter-1" } }]
+  );
+  assert.match(xml, /<Worksheet ss:Name="生词库">/);
+  assert.match(xml, /<Worksheet ss:Name="句子库">/);
+  assert.match(xml, /organic/);
+  assert.match(xml, /It works\./);
+  assert.match(xml, /https:\/\/example\.com\/story\/chapter-1/);
 });
