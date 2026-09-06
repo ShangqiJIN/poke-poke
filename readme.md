@@ -13,7 +13,7 @@ Poke Poke helps users look up vocabulary, understand sentences, and save useful 
 - Optionally enhance sentence analysis with DeepSeek using the user's own API key.
 - Rank vocabulary meanings from nearby context without crossing sentence boundaries.
 - Read selected text aloud, split sentences with `/`, and highlight common fixed expressions.
-- Store vocabulary and sentences locally; search, hide translations, batch-delete, and export selected records as CSV or HTML.
+- Store vocabulary and sentences locally; search, hide translations, batch-delete, and export selected records as a two-sheet Excel workbook or HTML.
 
 Chrome 138 or later is recommended. The first translation for a language may download an on-device language pack. Chrome internal pages, the Chrome Web Store, and some protected documents do not allow content-script injection.
 
@@ -26,7 +26,8 @@ Tap the green **P** floating button to:
 - enable or disable selection handling;
 - choose **Google** or **DeepSeek** translation mode;
 - enter and test a personal DeepSeek API key only when DeepSeek is selected;
-- open the local vocabulary and sentence library.
+- open the local vocabulary and sentence library, whose controls stay visible while scrolling;
+- read saved entries aloud and return to their source webpages.
 
 Google Web translation is experimental and may be rate-limited or changed. When DeepSeek is selected, chosen text is sent to DeepSeek; the API key remains in Stay's local storage.
 
@@ -67,7 +68,7 @@ Poke Poke（戳戳）是一款网页阅读学习工具，让用户无需离开�
 - 可选择使用用户自己的 DeepSeek API Key 增强句子分析。
 - 参考选区附近的上下文判断词义，并避免跨越句号取词。
 - 使用系统语音朗读选区、用 `/` 分句，并识别、高亮常见固定搭配。
-- 在本地保存单词和句子，支持搜索、隐藏翻译、批量删除，以及按选择导出 CSV 或 HTML。
+- 在本地保存单词和句子，支持搜索、隐藏翻译、批量删除，以及按选择导出双工作表 Excel 或 HTML。
 
 建议使用 Chrome 138 或更高版本。首次翻译某种语言时，Chrome 可能下载本地语言包。Chrome 内部页面、Chrome 应用商店和部分受保护页面不允许注入扩展脚本。
 
@@ -80,7 +81,8 @@ iPhone/iPad Safari 版是独立用户脚本 [`platforms/stay/english-reader.user
 - 通过开关启用或停用网页划词；
 - 选择 **Google** 或 **DeepSeek** 翻译模式；
 - 仅在选择 DeepSeek 时填写并测试个人 API Key；
-- 打开本地单词库和句子库。
+- 打开本地单词库和句子库，滚动时操作栏保持可见；
+- 朗读已保存内容，并通过来源链接返回原网页。
 
 Google Web 翻译属于实验性接口，可能限流或发生变化。选择 DeepSeek 后，所选文本会发送给 DeepSeek，API Key 只保存在 Stay 的本地存储中。
 
